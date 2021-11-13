@@ -15,8 +15,12 @@ const (
 	keyCtrlL     = 12
 	keyCtrlN     = 14
 	keyCtrlP     = 16
+	keyCtrlR     = 18
+	keyCtrlS     = 19
+	keyCtrlT     = 20
 	keyCtrlU     = 21
 	keyCtrlW     = 23
+	keyCtrlY     = 25
 	keyEnter     = '\r'
 	keyEscape    = 27
 	keyBackspace = 127
