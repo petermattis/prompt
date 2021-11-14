@@ -3,14 +3,15 @@ package prompt
 import (
 	"bytes"
 	"io"
+	"sort"
 	"strconv"
 	"unicode"
 
 	"github.com/mattn/go-runewidth"
 )
 
+// TODO(peter): test the text attribute support
 // TODO(peter): scroll input that is taller than the screen
-// TODO(peter): continuation prompt?
 // TODO(peter): syntax highlighting?
 
 const (
@@ -71,6 +72,16 @@ type lineInfo struct {
 	x, y int
 }
 
+// attrInfo holds the text attribute state for a contiguous region of text.
+type attrInfo struct {
+	// startPos and endPos specify the range of text to apply the attribute to as
+	// screen.text[startPos:endPos).
+	startPos int
+	endPos   int
+	// The attribute value to apply to the text.
+	value string
+}
+
 // screen models a prompt, input text, and the display of the prompt and text on
 // a terminal. Rendering assumes support for a minimal set of ANSI escape
 // sequences: relative cursor movement (ESC[<num>{A,B,C,D}), move to top left
@@ -90,6 +101,11 @@ type screen struct {
 	// line, it is wrapped. The input text is split into multiple lines on newlines
 	// ('\n').
 	lines []lineInfo
+	// attrs holds attributes to apply to the displayed text. The elements are spans
+	// of text delineated by [startPos,endPos), sorted by startPos.
+	attrs []attrInfo
+	// insertAttrs holds the attributes to apply to text inserted by Insert().
+	insertAttrs string
 	// width is the width in characters of the terminal.
 	width int
 	// height is the height in characters of the terminal.
@@ -128,6 +144,8 @@ func (s *screen) Reset(prefix []rune) {
 	s.prefix = prefix
 	s.suffix = nil
 	s.text = append([]rune(nil), s.prefix...)
+	s.attrs = nil
+	s.insertAttrs = ""
 	s.lines = nil
 	s.cursorPos = 0
 	s.cursorX = 0
@@ -260,6 +278,10 @@ func (s *screen) MoveTo(pos int) {
 	s.moveCursor(x, y)
 }
 
+func (s *screen) SetAttrs(value string) {
+	s.insertAttrs = value
+}
+
 // Insert inserts text at the current cursor position, moving the cursor
 // forwards.
 func (s *screen) Insert(text ...rune) {
@@ -287,6 +309,30 @@ func (s *screen) Insert(text ...rune) {
 	s.text = s.text[:len(s.text)+len(text)]
 	copy(s.text[s.cursorPos+len(text):], s.text[s.cursorPos:])
 	copy(s.text[s.cursorPos:], text)
+
+	// Update any existing attribute spans to account for the newly inserted text.
+	for i := range s.attrs {
+		attr := &s.attrs[i]
+		if attr.endPos <= s.cursorPos {
+			break
+		}
+		if attr.startPos > s.cursorPos {
+			attr.startPos += len(text)
+		}
+		attr.endPos += len(text)
+	}
+	// If attributes are active, add a span for the newly inserted text.
+	if s.insertAttrs != "" {
+		s.attrs = append(s.attrs, attrInfo{
+			startPos: s.cursorPos,
+			endPos:   s.cursorPos + len(text),
+			value:    s.insertAttrs,
+		})
+		sort.Slice(s.attrs, func(i, j int) bool {
+			return s.attrs[i].startPos < s.attrs[j].startPos
+		})
+	}
+
 	newPos := s.cursorPos + len(text) - len(s.prefix)
 	s.renderText(len(s.text))
 	s.MoveTo(newPos)
@@ -308,11 +354,13 @@ func (s *screen) EraseTo(pos int) string {
 	case pos == s.cursorPos:
 		return ""
 	case pos < s.cursorPos:
+		s.eraseAttrs(pos, s.cursorPos)
 		erased = string(s.text[pos:s.cursorPos])
 		copy(s.text[pos:], s.text[s.cursorPos:])
 		s.text = s.text[:len(s.text)-(s.cursorPos-pos)]
 		s.MoveTo(pos - len(s.prefix))
 	case pos > s.cursorPos:
+		s.eraseAttrs(s.cursorPos, pos)
 		erased = string(s.text[s.cursorPos:pos])
 		copy(s.text[s.cursorPos:], s.text[pos:])
 		s.text = s.text[:len(s.text)-(pos-s.cursorPos)]
@@ -484,12 +532,58 @@ func (s *screen) invalidateLines() {
 // renderText renders the range of text [b.cursorPos,end) advancing the cursor
 // position to end.
 func (s *screen) renderText(end int) {
+	// We keep track of the active attributes at the current cursor position. When
+	// an attribute becomes active, we emit its escape sequence. When an attribute
+	// becomes inactive (because we stepped past its span), we emit a reset sequence
+	// and then re-emit the escape sequence for the remaining active attributes.
+	var activeAttrs []attrInfo
+	attrs := s.attrs
+	for len(attrs) > 0 {
+		if attrs[0].endPos >= s.cursorPos {
+			break
+		}
+		attrs = attrs[1:]
+	}
+
+	startAttrs := func(pos int) {
+		for len(attrs) > 0 {
+			if s.cursorPos < attrs[0].startPos {
+				break
+			}
+			if s.cursorPos < attrs[0].endPos {
+				activeAttrs = append(activeAttrs, attrs[0])
+				s.outbuf.WriteString(attrs[0].value)
+			}
+			attrs = attrs[1:]
+		}
+	}
+
+	endAttrs := func(pos int) {
+		old := activeAttrs
+		activeAttrs = activeAttrs[:0]
+		for i := range old {
+			attr := &old[i]
+			if pos+1 == attr.endPos {
+				continue
+			}
+			activeAttrs = append(activeAttrs, *attr)
+		}
+		if len(activeAttrs) != len(old) {
+			s.outbuf.WriteString(attrReset)
+			for i := range activeAttrs {
+				s.outbuf.WriteString(activeAttrs[i].value)
+			}
+		}
+	}
+
 	for text := s.text[s.cursorPos:end]; len(text) > 0; {
 		consumed, width, newline := fitGraphemes(text, s.width-s.cursorX)
 		for _, r := range text[:consumed] {
+			startAttrs(s.cursorPos)
 			s.outbuf.WriteRune(r)
+			endAttrs(s.cursorPos)
+			s.cursorPos++
 		}
-		s.cursorPos += consumed
 		text = text[consumed:]
 
 		if width > 0 {
@@ -514,10 +608,15 @@ func (s *screen) renderText(end int) {
 			s.cursorX = 0
 			s.cursorY++
 			if newline {
+				endAttrs(s.cursorPos)
 				s.cursorPos++
 				text = text[1:]
 			}
 		}
+	}
+
+	if len(activeAttrs) != 0 {
+		s.outbuf.WriteString(attrReset)
 	}
 }
 
@@ -592,6 +691,48 @@ func (s *screen) eraseLineToRight() {
 // of the screen and to erase the contents of the screen.
 func (s *screen) eraseScreen() {
 	s.outbuf.WriteString("\x1b[H\x1b[2J")
+}
+
+func (s *screen) eraseAttrs(start, end int) {
+	attrs := s.attrs
+	s.attrs = s.attrs[:0]
+	for i := range attrs {
+		attr := &attrs[i]
+		if start >= attr.endPos {
+			// Attribute info is fully before erased span.
+			//     attr: +-------+
+			//     span:         +-------+
+			//           0 1 2 3 4 5 6 7 8
+			s.attrs = append(s.attrs, *attr)
+			continue
+		}
+		if end <= attr.startPos {
+			// Attribute info is fully after erased span.
+			//     attr:         +-------+
+			//     span: +-------+
+			//           0 1 2 3 4 5 6 7 8
+			attr.startPos -= end - start
+			attr.endPos -= end - start
+			s.attrs = append(s.attrs, *attr)
+			continue
+		}
+		overlapStart := attr.startPos
+		if overlapStart < start {
+			overlapStart = start
+		}
+		overlapEnd := attr.endPos
+		if overlapEnd > end {
+			overlapEnd = end
+		}
+		attr.endPos -= overlapEnd - overlapStart
+		if attr.startPos < attr.endPos {
+			if start < attr.startPos {
+				attr.endPos -= attr.startPos - start
+				attr.startPos = start
+			}
+			s.attrs = append(s.attrs, *attr)
+		}
+	}
 }
 
 const zeroWidthJoiner = '\u200d'

@@ -13,9 +13,10 @@ import (
 )
 
 type state struct {
-	history  history
-	killRing killRing
-	screen   screen
+	completer completer
+	history   history
+	killRing  killRing
+	screen    screen
 
 	// inputFinished is a callback invoked by the finish-or-enter command to
 	// determine if the input is considered complete. If the callback is nil, or it
@@ -221,6 +222,12 @@ func (p *Prompt) dispatchKeyLocked(key rune) error {
 	cmd := p.bindings[key]
 	if cmd == "" {
 		cmd = cmdInsertChar
+	}
+
+	if ok, err := s.completer.Dispatch(s, cmd, key); err != nil {
+		return err
+	} else if ok {
+		return nil
 	}
 
 	if ok, err := s.killRing.Dispatch(s, cmd, key); err != nil {

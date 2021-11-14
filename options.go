@@ -92,3 +92,18 @@ func (o inputFinishedOption) apply(p *Prompt) {
 func WithInputFinished(fn func(text string) bool) Option {
 	return inputFinishedOption{fn}
 }
+
+type completerOption struct {
+	fn CompletionFunc
+}
+
+func (o completerOption) apply(p *Prompt) {
+	p.mu.state.completer.fn = o.fn
+}
+
+// WithCompleter allows configuring a callback that will be invoked when text is
+// entered or deleted in order to determine completions of the word at the
+// current position.
+func WithCompleter(fn CompletionFunc) Option {
+	return completerOption{fn}
+}

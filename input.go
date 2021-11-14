@@ -22,6 +22,7 @@ const (
 	keyCtrlW     = 23
 	keyCtrlY     = 25
 	keyEnter     = '\r'
+	keyTab       = '\t'
 	keyEscape    = 27
 	keyBackspace = 127
 	keyUnknown   = 0xd800 /* UTF-16 surrogate area */ + iota

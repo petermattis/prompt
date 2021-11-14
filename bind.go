@@ -23,6 +23,7 @@ const (
 	cmdBeginningOfLine               = "beginning-of-line"
 	cmdCancel                        = "cancel"
 	cmdClearScreen                   = "clear-screen"
+	cmdComplete                      = "complete"
 	cmdDeleteChar                    = "delete-char"
 	cmdDeleteHorizontalSpace         = "delete-horizontal-space"
 	cmdEndOfLine                     = "end-of-line"
@@ -55,6 +56,7 @@ bind Enter           ` + cmdFinishOrEnter + `
 bind Home            ` + cmdBeginningOfLine + `
 bind Left            ` + cmdBackwardChar + `
 bind Right           ` + cmdForwardChar + `
+bind Tab             ` + cmdComplete + `
 bind Up              ` + cmdPreviousHistory + `
 bind Control-Left    ` + cmdBackwardWord + `
 bind Control-Right   ` + cmdForwardWord + `
@@ -107,6 +109,7 @@ var namedKeys = map[string]rune{
 	"page-up":   keyPageUp,
 	"right":     keyRight,
 	"space":     ' ',
+	"tab":       keyTab,
 	"up":        keyUp,
 }
 
@@ -121,6 +124,7 @@ var baseCommands = map[command]commandFunc{
 	cmdBackwardDeleteChar: func(s *state, key rune) (bool, error) {
 		// Erase to the beginning of the previous grapheme.
 		s.screen.EraseTo(s.screen.PrevGraphemeStart())
+		s.completer.Try(s)
 		return true, nil
 	},
 	cmdBackwardWord: func(s *state, key rune) (bool, error) {
@@ -150,6 +154,7 @@ var baseCommands = map[command]commandFunc{
 	cmdDeleteChar: func(s *state, key rune) (bool, error) {
 		// Delete the next grapheme.
 		s.screen.EraseTo(s.screen.NextGraphemeEnd())
+		s.completer.Try(s)
 		return true, nil
 	},
 	cmdDeleteHorizontalSpace: func(s *state, key rune) (bool, error) {
@@ -211,6 +216,7 @@ var baseCommands = map[command]commandFunc{
 	cmdInsertChar: func(s *state, key rune) (bool, error) {
 		// Insert the character at the current cursor position.
 		s.screen.Insert(key)
+		s.completer.Try(s)
 		return true, nil
 	},
 	cmdSetMark: func(s *state, key rune) (bool, error) {
@@ -255,6 +261,9 @@ var baseCommands = map[command]commandFunc{
 
 func isValidCommand(cmd command) bool {
 	if _, ok := baseCommands[cmd]; ok {
+		return true
+	}
+	if _, ok := completionCommands[cmd]; ok {
 		return true
 	}
 	if _, ok := killCommands[cmd]; ok {

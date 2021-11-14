@@ -3,6 +3,7 @@ package prompt
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,7 +21,7 @@ type mockTerm struct {
 	cursorY  int
 }
 
-var seqRE = regexp.MustCompile(`^\x1b\[(\d*)([ABCDHJK])`)
+var seqRE = regexp.MustCompile(`^\x1b\[(\d*)([ABCDHJKm])`)
 
 func newMockTerm(w, h int) *mockTerm {
 	return &mockTerm{
@@ -64,6 +65,8 @@ func (t *mockTerm) Write(p []byte) (int, error) {
 				t.eraseScreen(n)
 			case 'K':
 				t.eraseLine(n)
+			case 'm':
+				// Set attribute, ignore
 			default:
 				return -1, fmt.Errorf("unknown CSI command: %q", m[2][0])
 			}
@@ -289,6 +292,7 @@ func TestPrompt(t *testing.T) {
 		"<Left>":       "\x1b[D",
 		"<Right>":      "\x1b[C",
 		"<Space>":      " ",
+		"<Tab>":        "\t",
 		"<Up>":         "\x1b[A",
 	}
 	inputReplacementFunc := func(src string) string {
@@ -301,6 +305,28 @@ func TestPrompt(t *testing.T) {
 	inputFinished := func(text string) bool {
 		text = strings.TrimSpace(text)
 		return strings.HasSuffix(text, ";")
+	}
+
+	animals := []string{
+		"baboon", "bat", "bear", "beaver", "bird", "bison", "boar", "bull",
+		"mantis", "marmot", "mink", "mole", "monkey", "moose", "mouse", "mule",
+	}
+
+	completer := func(text []rune, wordStart, wordEnd int) []string {
+		word := strings.ToLower(string(text[wordStart:wordEnd]))
+		i := sort.Search(len(animals), func(i int) bool {
+			return animals[i] >= word
+		})
+		if i >= len(animals) {
+			return nil
+		}
+		j := i
+		for ; j < len(animals); j++ {
+			if !strings.HasPrefix(animals[j], word) {
+				break
+			}
+		}
+		return animals[i:j]
 	}
 
 	datadriven.Walk(t, "testdata", func(t *testing.T, path string) {
@@ -316,6 +342,7 @@ func TestPrompt(t *testing.T) {
 					td.ScanArgs(t, "height", &height)
 					term = newMockTerm(width, height)
 					p = New(WithOutput(term), WithSize(width, height),
+						WithCompleter(completer),
 						WithInputFinished(inputFinished))
 					p.mu.state.screen.Reset([]rune("> "))
 
