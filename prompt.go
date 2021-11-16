@@ -78,7 +78,7 @@ type Prompt struct {
 
 // New creates a new Prompt using the supplied options. If no options are
 // specified, the Prompt uses os.Stdin and os.Stdout for input and output.
-func New(options ...Option) *Prompt {
+func New(options ...Option) (*Prompt, error) {
 	p := &Prompt{
 		in:       os.Stdin,
 		out:      os.Stdout,
@@ -86,12 +86,16 @@ func New(options ...Option) *Prompt {
 	}
 
 	if err := parseBindings(p.bindings, defaultBindings); err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	p.mu.state.screen.Init()
 	for _, opt := range options {
 		opt.apply(p)
+	}
+
+	if err := p.mu.state.history.Load(); err != nil {
+		return nil, err
 	}
 
 	type fdGetter interface {
@@ -100,12 +104,12 @@ func New(options ...Option) *Prompt {
 	if f, ok := p.in.(fdGetter); ok {
 		p.fd = int(f.Fd())
 	}
-	return p
+	return p, nil
 }
 
 // Close closes the Prompt, releasing any open resources.
 func (p *Prompt) Close() error {
-	return nil
+	return p.mu.state.history.Close()
 }
 
 // ReadLine reads a line of input. If the input is canceled, io.EOF is returned

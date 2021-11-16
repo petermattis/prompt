@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 
@@ -42,8 +43,13 @@ func main() {
 # - tab completion of SQL keywords
 `)
 
-	p := prompt.New(prompt.WithCompleter(completer),
+	p, err := prompt.New(
+		prompt.WithCompleter(completer),
+		prompt.WithHistory(os.ExpandEnv("${HOME}/.cockroachsql_history"), -1),
 		prompt.WithInputFinished(inputFinished))
+	if err != nil {
+		log.Fatal(err)
+	}
 	for {
 		_, err := p.ReadLine("demo> ")
 		if err != nil {

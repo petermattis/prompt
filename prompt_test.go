@@ -2,6 +2,8 @@ package prompt
 
 import (
 	"fmt"
+	"io/ioutil"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/cockroachdb/datadriven"
 	"github.com/mattn/go-runewidth"
+	"github.com/stretchr/testify/require"
 )
 
 type mockTerm struct {
@@ -329,6 +332,14 @@ func TestPrompt(t *testing.T) {
 		return animals[i:j]
 	}
 
+	historyFile, err := ioutil.TempFile(".", "history.*")
+	require.NoError(t, err)
+	historyPath := historyFile.Name()
+	historyFile.Close()
+	t.Cleanup(func() {
+		os.Remove(historyPath)
+	})
+
 	datadriven.Walk(t, "testdata", func(t *testing.T, path string) {
 		datadriven.RunTest(t, path,
 			func(t *testing.T, td *datadriven.TestData) string {
@@ -341,10 +352,19 @@ func TestPrompt(t *testing.T) {
 					td.ScanArgs(t, "width", &width)
 					td.ScanArgs(t, "height", &height)
 					term = newMockTerm(width, height)
-					p = New(WithOutput(term), WithSize(width, height),
+
+					var err error
+					p, err = New(
+						WithOutput(term),
+						WithSize(width, height),
 						WithCompleter(completer),
-						WithInputFinished(inputFinished))
+						WithInputFinished(inputFinished),
+						WithHistory(historyPath, 5))
+					if err != nil {
+						return err.Error()
+					}
 					p.mu.state.screen.Reset([]rune("> "))
+					return ""
 
 				case "input":
 					input := inputRE.ReplaceAllStringFunc(td.Input, inputReplacementFunc)
@@ -369,6 +389,24 @@ func TestPrompt(t *testing.T) {
 					td.ScanArgs(t, "height", &height)
 					term.fill(x, y, width, height, '#')
 					return term.String()
+
+				case "history-file-set":
+					input := td.Input
+					if len(input) > 0 {
+						input += "\n"
+					}
+					err := os.WriteFile(historyPath, []byte(input), 0644)
+					if err != nil {
+						return err.Error()
+					}
+					return ""
+
+				case "history-file-dump":
+					buf, err := os.ReadFile(historyPath)
+					if err != nil {
+						return err.Error()
+					}
+					return string(buf)
 				}
 				return ""
 			})

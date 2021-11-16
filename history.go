@@ -1,12 +1,13 @@
 package prompt
 
 import (
+	"bufio"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"unicode/utf8"
 )
-
-const historyMax = 100
 
 var historyCommands = map[command]commandFunc{
 	cmdAbort: func(s *state, key rune) (bool, error) {
@@ -41,10 +42,13 @@ var historyCommands = map[command]commandFunc{
 // and the pending input including positioning of the cursor within the
 // currently matched line when there is more than one match on a line.
 type history struct {
+	path             string
+	file             io.WriteCloser
 	pending          string
 	entries          []string
 	head             int
 	size             int
+	maxSize          int
 	index            int
 	searchDir        int
 	searchMatched    bool
@@ -52,23 +56,98 @@ type history struct {
 	searchMatchedKey string
 }
 
+// Load loads history entries from file. The history entries are expected to be
+// encoded one per line in the file with whitespace encoded as \000 octal
+// escapes. The first entry must be "_HiStOrY_V2_".
+func (h *history) Load() error {
+	// This is the special value stored at the start of libedit history files.
+	const historyCookie = "_HiStOrY_V2_"
+
+	if h.path == "" {
+		return nil
+	}
+
+	f, err := os.OpenFile(h.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if f != nil {
+			f.Close()
+		}
+	}()
+
+	var n int
+	for s := bufio.NewScanner(f); s.Scan(); n++ {
+		text := s.Text()
+		if n == 0 {
+			if text != historyCookie {
+				return fmt.Errorf("malformed history cookie: %q != %q", text, historyCookie)
+			}
+			continue
+		}
+		v, err := decodeVis(text)
+		if err != nil {
+			return err
+		}
+		h.Add(v)
+	}
+
+	if count := n - 1; count < 0 {
+		// If the history file was empty, write a cookie to initialize it.
+		fmt.Fprintf(f, "%s\n", historyCookie)
+	} else if count > (h.maxSize*5)/4 {
+		// The history file is 25% large than the max size, rewrite it.
+		f.Close()
+		f, err = os.OpenFile(h.path, os.O_CREATE|os.O_RDWR|os.O_APPEND|os.O_TRUNC, 0644)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(f, "%s\n", historyCookie)
+		for i := len(h.entries) - 1; i >= 0; i-- {
+			fmt.Fprintf(f, "%s\n", encodeVis(h.entry(i)))
+		}
+	}
+
+	h.file, f = f, nil
+	return nil
+}
+
+// Close closes the history file (if one is open).
+func (h *history) Close() error {
+	if h.file != nil {
+		if err := h.file.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Add adds a new entry to history, overwriting the oldest entry if the max
 // number of history entries has been reached. The current index in the history
 // navigation is reset.
 func (h *history) Add(s string) {
-	if h.entries == nil {
-		h.entries = make([]string, historyMax)
+	if h.maxSize == 0 {
+		// History is disabled.
+		debugPrintf("history: disabled\n")
+		return
 	}
 	if h.entry(0) == s {
 		// Don't add a new entry if it is identical to the previous entry.
+		debugPrintf("history: elide duplicate\n")
 		return
+	}
+	if h.maxSize == -1 || len(h.entries) < h.maxSize {
+		h.entries = append(h.entries, "")
 	}
 	h.head = (h.head + 1) % len(h.entries)
 	h.entries[h.head] = s
-	if h.size < len(h.entries) {
-		h.size++
-	}
 	h.index = -1
+
+	// If we have a history file, append the new entry.
+	if h.file != nil {
+		fmt.Fprintf(h.file, "%s\n", encodeVis(s))
+	}
 }
 
 // Next saves the current history entry, advances to the next entry, and sets
@@ -96,7 +175,7 @@ func (h *history) Previous(s *state) (bool, error) {
 	if h.searchDir != 0 {
 		return h.ReverseSearch(s)
 	}
-	if h.index+1 >= h.size {
+	if h.index+1 >= len(h.entries) {
 		return false, nil
 	}
 	h.save(s.screen.Text())
@@ -193,7 +272,7 @@ func (h *history) Dispatch(s *state, cmd command, key rune) (ok bool, err error)
 func (h *history) String() string {
 	var buf strings.Builder
 	buf.WriteString("[")
-	for i := 0; i < h.size; i++ {
+	for i := range h.entries {
 		if i > 0 {
 			buf.WriteString(", ")
 		}
@@ -215,7 +294,7 @@ func (h *history) entry(n int) string {
 }
 
 func (h *history) entryIndex(n int) int {
-	if n >= h.size {
+	if n >= len(h.entries) {
 		return -1
 	}
 	index := h.head - n
@@ -302,7 +381,7 @@ func (h *history) updateSearch(s *state, advance bool) {
 			}
 
 		case -1:
-			for i := h.index; i < h.size; i++ {
+			for i := h.index; i < len(h.entries); i++ {
 				if h.searchEntry(s, i, advance) {
 					h.searchMatched = true
 					h.searchMatchedKey = h.searchKey
@@ -330,7 +409,7 @@ func (h *history) maybeInitSearch(s *state) {
 	if h.searchDir != 0 {
 		return
 	}
-	if h.size == 0 {
+	if len(h.entries) == 0 {
 		h.index = -1
 	}
 	h.save(s.screen.Text())

@@ -59,6 +59,20 @@ func WithOutput(w io.Writer) Option {
 	}
 }
 
+type historyOption struct {
+	path    string
+	maxSize int
+}
+
+func (o historyOption) apply(p *Prompt) {
+	p.mu.state.history.path = o.path
+	p.mu.state.history.maxSize = o.maxSize
+}
+
+func WithHistory(path string, maxSize int) Option {
+	return historyOption{path, maxSize}
+}
+
 type sizeOption struct {
 	width, height int
 }
